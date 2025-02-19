@@ -102,8 +102,11 @@ def _unit(mode, extra_arg_string='', coverage=False):
                % (_line_sep, 'msg', env_str, cmd_string))
         print(msg)
     sys.stdout.flush()
-    return_code = run_subprocess(cmd, return_code=True, cwd=cwd,
-                                 env=env, stdout=None, stderr=None)[2]
+    stdout, stderr, return_code = run_subprocess(
+        cmd, return_code=True, cwd=cwd, env=env, stdout=None, stderr=None
+    )
+    print(stdout)
+    print(stderr)
     if return_code:
         raise RuntimeError('unit failure (%s)' % return_code)
     if coverage:
