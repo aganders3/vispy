@@ -1,1 +1,2 @@
 pyopengltk
+git+https://github.com/aganders3/pyopengl.git@print-debug-glx
