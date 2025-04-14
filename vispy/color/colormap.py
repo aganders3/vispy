@@ -358,11 +358,11 @@ class BaseColormap(object):
 
     def _map_special_colors(self, param, colors):
         """Apply special mapping to edge cases (NaN and max/min clim)."""
-        colors = np.where(np.isnan(param.reshape(-1, 1)), self._bad_color.rgba, colors)
+        colors = np.where(np.isnan(param.reshape(-1, 1)), colors, self._bad_color.rgba)
         if self._high_color is not None:
-            colors = np.where((param == 1).reshape(-1, 1), self._high_color.rgba, colors)
+            colors = np.where((param == 1).reshape(-1, 1), colors, self._high_color.rgba)
         if self._low_color is not None:
-            colors = np.where((param == 0).reshape(-1, 1), self._low_color.rgba, colors)
+            colors = np.where((param == 0).reshape(-1, 1), colors, self._low_color.rgba)
         return colors
 
     def texture_lut(self):
