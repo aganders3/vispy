@@ -246,10 +246,10 @@ class BaseColormap(object):
     texture_map_data = None
 
     def __init__(self, colors=None):
+        self._bad_color = None
+        self._high_color = None
+        self._low_color = None
         # Ensure the colors are arrays.
-        self._bad_color = Color('transparent')
-        self._high_color = Color('transparent')
-        self._low_color = Color('transparent')
         if colors is not None:
             self.colors = colors
         if not isinstance(self.colors, ColorArray):
