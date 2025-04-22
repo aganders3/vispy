@@ -976,8 +976,16 @@ class CanvasBackendDesktop(QtBaseCanvasBackend, QGLWidget):
             context.flush()
 
 
-class CanvasBackendWayland(QtBaseCanvasBackend, QGLWidget):
-    """Canvas backend specifically optimized for Wayland compatibility."""
+class CanvasBackendWayland(QtBaseCanvasBackend, QOpenGLWidget):
+    """Canvas backend specifically optimized for Wayland compatibility.
+
+    This implementation addresses several Wayland-specific issues:
+    1. Properly handles alpha channel to prevent transparency
+    2. Uses QOpenGLWidget instead of deprecated QGLWidget
+    3. Works with Wayland's compositor and security model
+    4. Handles high DPI displays correctly
+    5. Properly manages OpenGL context and buffer swapping
+    """
 
     def _init_specific(self, p, kwargs):
         # Initialize with modern QSurfaceFormat instead of QGLFormat
@@ -990,6 +998,9 @@ class CanvasBackendWayland(QtBaseCanvasBackend, QGLWidget):
         fmt.setGreenBufferSize(p.context.config["green_size"])
         fmt.setBlueBufferSize(p.context.config["blue_size"])
         fmt.setAlphaBufferSize(p.context.config["alpha_size"])
+
+        # Enforce opaque background in format
+        fmt.setAlphaBufferSize(8)  # We need alpha for proper clearing
 
         # Set swap behavior based on double buffer config
         if PYQT6_API or PYSIDE6_API:
@@ -1026,10 +1037,29 @@ class CanvasBackendWayland(QtBaseCanvasBackend, QGLWidget):
             hint = qt_window_types.Widget  # can also be a window type
 
         # Initialize QOpenGLWidget
-        QGLWidget.__init__(self, p.parent, hint)
+        QOpenGLWidget.__init__(self, p.parent, hint)
 
         # Set format
         self.setFormat(fmt)
+
+        # Set widget attributes after initialization
+        if PYQT6_API:
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, False)
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_NoSystemBackground, False)
+            self.setAttribute(QtCore.Qt.WidgetAttribute.WA_OpaquePaintEvent, True)
+        else:
+            self.setAttribute(QtCore.Qt.WA_TranslucentBackground, False)
+            self.setAttribute(QtCore.Qt.WA_NoSystemBackground, False)
+            self.setAttribute(QtCore.Qt.WA_OpaquePaintEvent, True)
+
+        # Set background color to something opaque
+        pal = self.palette()
+        if PYQT6_API:
+            pal.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor(0, 0, 0))
+        else:
+            pal.setColor(QtGui.QPalette.Window, QtGui.QColor(0, 0, 0))
+        self.setAutoFillBackground(True)
+        self.setPalette(pal)
 
         # Set focus policy
         qt_focus_policies = QtCore.Qt.FocusPolicy if PYQT6_API else QtCore.Qt
@@ -1052,9 +1082,16 @@ class CanvasBackendWayland(QtBaseCanvasBackend, QGLWidget):
             self.makeCurrent()
 
     def _vispy_swap_buffers(self):
-        # For QOpenGLWidget, swap is handled automatically by the Qt compositor
-        # Just request an update to ensure the next frame is rendered
-        self.update()
+        # In QOpenGLWidget with Wayland, we need to:
+        # 1. Make sure we're current before swapping
+        # 2. Explicitly call the context's swapBuffers with the right surface
+        if self._vispy_canvas is None:
+            return
+
+        self.makeCurrent()
+        ctx = self.context()
+        ctx.swapBuffers(ctx.surface())
+        # No need to call update() as paintGL will be called by the event loop
 
     def _vispy_get_fb_bind_location(self):
         # Return the framebuffer object ID
@@ -1079,6 +1116,10 @@ class CanvasBackendWayland(QtBaseCanvasBackend, QGLWidget):
             size=(w, h), physical_size=(physical_w, physical_h)
         )
 
+        # Immediately redraw to avoid flicker or transparent areas
+        # This is especially important on Wayland
+        self.update()
+
     def paintGL(self):
         if self._vispy_canvas is None:
             return
@@ -1087,8 +1128,13 @@ class CanvasBackendWayland(QtBaseCanvasBackend, QGLWidget):
         self._vispy_canvas.set_current()
         self._vispy_canvas.events.draw(region=None)
 
-        # No need for the alpha channel clearing that was in the desktop backend
-        # as Wayland's compositing works differently
+        # This is actually necessary on Wayland too - we need to ensure the alpha channel
+        # is properly set to prevent transparency
+        context = self._vispy_canvas.context
+        context.set_color_mask(False, False, False, True)
+        context.clear(color=True, depth=False, stencil=False)
+        context.set_color_mask(True, True, True, True)
+        context.flush()
 
 
 # Select CanvasBackend
