@@ -8,6 +8,7 @@
 import numpy as np
 
 from .. import gloo
+from ..util import logger
 from .visual import Visual
 
 # per-splat records (16 floats = 4 RGBA32F texels) are stored in a data texture
@@ -211,6 +212,9 @@ class GaussianSplatVisual(Visual):
         # zoom and static redraws (see _sort).
         self._last_view_dir = None
 
+        # the real GL_MAX_TEXTURE_SIZE is only readable once a context exists
+        self._checked_texture_size = False
+
         # instancing quad, drawn as a triangle strip
         quad = np.array([[-1, -1], [1, -1], [-1, 1], [1, 1]], dtype=np.float32)
         self.shared_program["a_quad"] = gloo.VertexBuffer(quad)
@@ -275,12 +279,19 @@ class GaussianSplatVisual(Visual):
             if pos.ndim != 2 or pos.shape[1] != 3:
                 raise ValueError(f"positions must have shape (N, 3), got {pos.shape}")
             self._splat_pos = pos
-            lo, hi = pos.min(0), pos.max(0)
-            self._bounds = np.array([lo, hi], dtype=np.float32)
-            # finite-difference step: ~1% of the largest bounding-box side, so
-            # it stays numerically well-conditioned whatever the data's units
-            extent = float((hi - lo).max())
-            self.shared_program["u_eps"] = 1e-2 * extent if extent > 0 else 1e-2
+            if len(pos):
+                lo, hi = pos.min(0), pos.max(0)
+                self._bounds = np.array([lo, hi], dtype=np.float32)
+                # finite-difference step: ~1% of the largest bounding-box side,
+                # so it stays well-conditioned whatever the data's units
+                extent = float((hi - lo).max())
+                self.shared_program["u_eps"] = (
+                    1e-2 * extent if extent > 0 else 1e-2
+                )
+            else:
+                # an empty visual draws nothing (_prepare_draw) and has no
+                # bounds to contribute to a camera's set_range()
+                self._bounds = None
         if covariances is not None:
             cov = np.asarray(covariances, dtype=np.float32)
             if cov.ndim != 3 or cov.shape[1:] != (3, 3):
@@ -361,6 +372,14 @@ class GaussianSplatVisual(Visual):
         grad = self._depth_gradient(view)
         norm = np.linalg.norm(grad)
         if norm == 0:
+            # a transform that drops z leaves no depth to sort by, but the
+            # index buffer still has to name every splat or only the ones it
+            # happens to hold get drawn
+            if self._last_view_dir is not None:
+                return
+            self._index_vbo.set_data(
+                np.arange(len(self._splat_pos), dtype=np.float32)
+            )
             return
         view_dir = grad / norm
         if self._last_view_dir is not None and np.allclose(
@@ -381,9 +400,33 @@ class GaussianSplatVisual(Visual):
 
         self._index_vbo.set_data(order)
 
+    def _check_texture_size(self, view):
+        """Warn once if the data texture exceeds this context's real limit.
+
+        _MAX_TEX_HEIGHT is a conservative guess made before a GL context
+        exists; the actual GL_MAX_TEXTURE_SIZE is only knowable at draw time,
+        and a texture over it fails to allocate with no useful message.
+        """
+        self._checked_texture_size = True
+        canvas = getattr(view.transforms, "canvas", None)
+        context = getattr(canvas, "context", None)
+        if context is None:
+            return
+        limit = context.capabilities.get("max_texture_size")
+        height = self._tex.shape[0]
+        if limit and max(height, _TEX_WIDTH) > limit:
+            logger.warning(
+                "GaussianSplatVisual needs a %d x %d data texture but this "
+                "context supports at most %d in either dimension; the splats "
+                "will not render. Use fewer splats.",
+                _TEX_WIDTH, height, limit,
+            )
+
     def _prepare_draw(self, view):
         if self._splat_pos is None or len(self._splat_pos) == 0:
             return False
+        if not self._checked_texture_size:
+            self._check_texture_size(view)
         self._sort(view)
         return True
 
