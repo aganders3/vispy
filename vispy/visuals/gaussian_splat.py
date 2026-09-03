@@ -8,6 +8,7 @@
 import numpy as np
 
 from .. import gloo
+from ..color import ColorArray
 from ..util import logger
 from .visual import Visual
 
@@ -24,6 +25,65 @@ _TEXELS_PER_SPLAT = 4
 _TEX_WIDTH = _SPLATS_PER_ROW * _TEXELS_PER_SPLAT   # 16384, the common GL max
 _MAX_TEX_HEIGHT = 16384
 _MAX_SPLATS = _SPLATS_PER_ROW * _MAX_TEX_HEIGHT
+
+
+def _parse_positions(positions):
+    pos = np.ascontiguousarray(positions, dtype=np.float32)
+    if pos.ndim != 2 or pos.shape[1] != 3:
+        raise ValueError(f"positions must have shape (N, 3), got {pos.shape}")
+    return pos
+
+
+def _parse_covariances(covariances):
+    """Split symmetric 3x3s into (S00, S01, S02) and (S11, S12, S22)."""
+    cov = np.asarray(covariances, dtype=np.float32)
+    if cov.ndim != 3 or cov.shape[1:] != (3, 3):
+        raise ValueError(
+            f"covariances must have shape (N, 3, 3), got {cov.shape}"
+        )
+    return np.ascontiguousarray(cov[:, 0, :]), np.ascontiguousarray(
+        np.stack([cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2]], axis=-1)
+    )
+
+
+def _parse_colors(colors, count):
+    """Validate `colors` and return (RGB, alpha or None).
+
+    ``count`` is used only to broadcast a single color over every splat.
+    """
+    if isinstance(colors, str) or np.ndim(colors) <= 1:
+        # one color for all splats, e.g. 'white', '#ff000080' or (1, 0, 0)
+        colors = np.broadcast_to(ColorArray(colors).rgba, (count, 4))
+    arr = np.asarray(colors, dtype=np.float32)
+    if arr.ndim == 2 and arr.shape[1] in (3, 4):
+        rgb = np.ascontiguousarray(arr[:, :3])
+        alpha = np.ascontiguousarray(arr[:, 3]) if arr.shape[1] == 4 else None
+        return rgb, alpha
+    raise ValueError(
+        "colors must be a single color, or have shape (N, 3) RGB or (N, 4) "
+        f"RGBA; got shape {arr.shape}"
+    )
+
+
+def _parse_opacities(opacities, count):
+    arr = np.asarray(opacities, dtype=np.float32)
+    if arr.ndim == 0:
+        arr = np.broadcast_to(arr, (count,))
+    elif arr.ndim != 1:
+        raise ValueError(
+            f"opacities must be a scalar or have shape (N,), got {arr.shape}"
+        )
+    return np.ascontiguousarray(arr)
+
+
+def _check_lengths(pos, cov_a, rgb, alpha):
+    counts = {"covariances": len(cov_a), "colors": len(rgb),
+              "opacities": len(alpha)}
+    bad = [f"{k} has length {v}" for k, v in counts.items() if v != len(pos)]
+    if bad:
+        raise ValueError(
+            f"positions has length {len(pos)}, but " + ", ".join(bad)
+        )
 
 
 VERTEX_SHADER = """
@@ -181,9 +241,18 @@ class GaussianSplatVisual(Visual):
         Gaussian centers, in visual coordinates.
     covariances : (N, 3, 3) array
         Symmetric positive-definite 3D covariance matrix for each Gaussian.
-    colors : (N, 4) array
-        RGBA color for each Gaussian, in [0, 1]. The alpha channel is the
-        Gaussian's peak opacity.
+    colors : array or Color
+        One of:
+
+        * a single color for every splat -- anything ``Color`` accepts, such
+          as ``'white'``, ``'#ff000080'`` or ``(1, 0, 0)``;
+        * a per-splat color, as (N, 3) RGB or (N, 4) RGBA in [0, 1].
+    opacities : (N,) array or float, optional
+        Per-Gaussian peak opacity in [0, 1]. Required unless ``colors`` is
+        given as (N, 4) RGBA, which supplies it as the alpha channel. A single
+        color also carries an alpha (opaque unless the color says otherwise),
+        which ``opacities`` overrides. Named in the plural because the scene
+        graph's ``Node.opacity`` is a separate, whole-visual alpha.
 
     Notes
     -----
@@ -198,13 +267,14 @@ class GaussianSplatVisual(Visual):
     included in splat data, but yet not supported here.
     """
 
-    def __init__(self, positions, covariances, colors):
+    def __init__(self, positions, covariances, colors, opacities=None):
         Visual.__init__(self, VERTEX_SHADER, FRAGMENT_SHADER)
 
         self._splat_pos = None
         self._splat_cov_a = None
         self._splat_cov_b = None
-        self._splat_rgba = None
+        self._splat_rgb = None      # (N, 3) color
+        self._splat_alpha = None    # (N,) peak opacity
 
         # cached bounding box, rows (min, max), for _compute_bounds
         self._bounds = None
@@ -246,7 +316,7 @@ class GaussianSplatVisual(Visual):
             blend_func=("one", "one_minus_src_alpha"),
         )
 
-        self.set_data(positions, covariances, colors)
+        self.set_data(positions, covariances, colors, opacities)
 
     @property
     def positions(self):
@@ -268,19 +338,63 @@ class GaussianSplatVisual(Visual):
     @property
     def colors(self):
         """The (N, 4) array of per-Gaussian RGBA colors."""
-        return self._splat_rgba
+        return np.concatenate(
+            [self._splat_rgb, self._splat_alpha[:, None]], axis=-1
+        )
 
-    def set_data(self, positions=None, covariances=None, colors=None):
+    @property
+    def opacities(self):
+        """The (N,) array of per-Gaussian peak opacities.
+
+        Not ``opacity``: the scene graph's ``Node.opacity`` is a separate,
+        whole-visual alpha and would shadow this name on
+        ``scene.visuals.GaussianSplat``.
+        """
+        return self._splat_alpha
+
+    def set_data(self, positions=None, covariances=None, colors=None,
+                 opacities=None):
         """Update any subset of the per-Gaussian data arrays.
 
         Parameters not supplied are left unchanged. See the class docstring
-        for the expected shapes.
+        for the expected shapes. Everything is validated before any of it is
+        committed, so a call that raises leaves the visual as it was.
         """
+        if (opacities is not None and colors is not None
+                and np.ndim(colors) == 2 and np.shape(colors)[-1] == 4):
+            raise ValueError(
+                "opacities is already given by the alpha channel of "
+                "(N, 4) RGBA colors; pass (N, 3) RGB to set it separately"
+            )
+
+        # unsupplied fields fall back to what is already held
+        pos = self._splat_pos if positions is None else _parse_positions(positions)
+        cov_a, cov_b = ((self._splat_cov_a, self._splat_cov_b)
+                        if covariances is None else _parse_covariances(covariances))
+        rgb, alpha = self._splat_rgb, self._splat_alpha
+        if colors is not None:
+            rgb, rgba_alpha = _parse_colors(colors, len(pos))
+            alpha = alpha if rgba_alpha is None else rgba_alpha
+
+        if alpha is None and opacities is None:
+            raise ValueError(
+                "opacities is required unless colors is a single color or "
+                "(N, 4) RGBA; pass it alongside (N, 3) RGB colors"
+            )
+        if opacities is not None:
+            alpha = _parse_opacities(opacities, len(pos))
+        _check_lengths(pos, cov_a, rgb, alpha)
+
+        # build the texture before committing: _pack_texture can still raise on
+        # a capacity overflow, and a half-applied update would leave the shader
+        # pointing at records that were never uploaded
+        tex = self._pack_texture(pos, cov_a, cov_b, rgb, alpha)
+
+        # ---- past here nothing can fail ----
+        self._splat_pos, self._splat_cov_a, self._splat_cov_b = pos, cov_a, cov_b
+        self._splat_rgb, self._splat_alpha = rgb, alpha
+
         if positions is not None:
-            pos = np.ascontiguousarray(positions, dtype=np.float32)
-            if pos.ndim != 2 or pos.shape[1] != 3:
-                raise ValueError(f"positions must have shape (N, 3), got {pos.shape}")
-            self._splat_pos = pos
             if len(pos):
                 lo, hi = pos.min(0), pos.max(0)
                 self._bounds = np.array([lo, hi], dtype=np.float32)
@@ -294,41 +408,20 @@ class GaussianSplatVisual(Visual):
                 # an empty visual draws nothing (_prepare_draw) and has no
                 # bounds to contribute to a camera's set_range()
                 self._bounds = None
-        if covariances is not None:
-            cov = np.asarray(covariances, dtype=np.float32)
-            if cov.ndim != 3 or cov.shape[1:] != (3, 3):
-                raise ValueError(
-                    f"covariances must have shape (N, 3, 3), got {cov.shape}"
-                )
-            # pack the symmetric 3x3 as cov_a=(S00,S01,S02), cov_b=(S11,S12,S22)
-            self._splat_cov_a = np.ascontiguousarray(cov[:, 0, :])
-            self._splat_cov_b = np.ascontiguousarray(
-                np.stack([cov[:, 1, 1], cov[:, 1, 2], cov[:, 2, 2]], axis=-1)
-            )
-        if colors is not None:
-            rgba = np.ascontiguousarray(colors, dtype=np.float32)
-            if rgba.ndim != 2 or rgba.shape[1] != 4:
-                raise ValueError(
-                    f"colors must have shape (N, 4) RGBA, got {rgba.shape}"
-                )
-            self._splat_rgba = rgba
 
-        # update the data texture from the current arrays, then force a
-        # re-sort (which re-uploads the index order) on the next draw
-        self._pack_texture()
+        self._tex.set_data(tex)
+        self.shared_program["u_tex_size"] = (
+            float(tex.shape[1]), float(tex.shape[0])
+        )
+        # force a re-sort (which re-uploads the draw order) on the next draw
         self._last_view_dir = None
         self.update()
 
-    def _pack_texture(self):
-        """Pack the per-splat records into the data texture (uploaded once per
-        data change; the sort only re-uploads indices)."""
-        pos = self._splat_pos
-        cov_a, cov_b, rgba = self._splat_cov_a, self._splat_cov_b, self._splat_rgba
+    @staticmethod
+    def _pack_texture(pos, cov_a, cov_b, rgb, alpha):
+        """Build the per-splat data texture (uploaded once per data change;
+        the sort only re-uploads the draw order)."""
         m = len(pos)
-        if not (len(cov_a) == m and len(cov_b) == m and len(rgba) == m):
-            raise ValueError(
-                "positions, covariances and colors must have matching lengths"
-            )
         if m > _MAX_SPLATS:
             raise ValueError(
                 f"{m:,} splats exceed what this visual can address: the limit "
@@ -345,14 +438,13 @@ class GaussianSplatVisual(Visual):
         packed[:, 1, 2] = cov_b[:, 0]                 # S11
         packed[:, 1, 3] = cov_b[:, 1]                 # S12
         packed[:, 2, 0] = cov_b[:, 2]                 # S22
-        packed[:, 2, 1:4] = rgba[:, :3]               # rgb
-        packed[:, 3, 0] = rgba[:, 3]                  # a
+        packed[:, 2, 1:4] = rgb                       # rgb
+        packed[:, 3, 0] = alpha                       # a
 
-        height = int(np.ceil(m / _SPLATS_PER_ROW))
+        height = int(np.ceil(m / _SPLATS_PER_ROW)) if m else 1
         tex = np.zeros((height, _TEX_WIDTH, 4), np.float32)
         tex.reshape(-1, 4)[: m * _TEXELS_PER_SPLAT] = packed.reshape(-1, 4)
-        self._tex.set_data(tex)
-        self.shared_program["u_tex_size"] = (float(_TEX_WIDTH), float(height))
+        return tex
 
     def _depth_gradient(self, view):
         """Gradient of framebuffer depth w.r.t. position (the view axis).
