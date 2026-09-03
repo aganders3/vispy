@@ -12,25 +12,26 @@ from ..util import logger
 from .visual import Visual
 
 # per-splat records (16 floats = 4 RGBA32F texels) are stored in a data texture
-# and fetched in the vertex shader by index; only the sorted index order is
-# re-uploaded per frame
-# splat n occupies linear texels [n*4 : n*4+4]
-# texture is a fixed width and grows in height with the splat count
-# indices stay exact in float32 up to ~2**24 splats, so that's the max
-_SPLATS_PER_ROW = 1024
+# and fetched in the vertex shader; only the sorted draw order is re-uploaded
+# per frame
+# rows hold whole splats, so splat n sits at (n // _SPLATS_PER_ROW,
+# n % _SPLATS_PER_ROW) and its 4 texels are a span within that one row
+# the order is uploaded as that (column, row) slot rather than as a running
+# index, because a single float32 index would only stay exact to 2**24 and
+# would cap the visual well below what the texture can hold
+_SPLATS_PER_ROW = 4096
 _TEXELS_PER_SPLAT = 4
-_TEX_WIDTH = _SPLATS_PER_ROW * _TEXELS_PER_SPLAT
+_TEX_WIDTH = _SPLATS_PER_ROW * _TEXELS_PER_SPLAT   # 16384, the common GL max
 _MAX_TEX_HEIGHT = 16384
 _MAX_SPLATS = _SPLATS_PER_ROW * _MAX_TEX_HEIGHT
 
 
 VERTEX_SHADER = """
 attribute vec2 a_quad;      // per-vertex: quad corner in [-1, 1]
-attribute float a_index;    // per-instance: splat index to fetch and draw
+attribute vec2 a_slot;      // per-instance: (column, row) of the splat to draw
 
 uniform sampler2D u_splats; // static per-splat data (RGBA32F)
 uniform vec2 u_tex_size;    // data texture size in texels (width, height)
-uniform float u_per_row;    // splats per texture row
 
 uniform float u_eps;        // finite-difference step (visual units)
 
@@ -53,9 +54,10 @@ vec2 project(vec3 p) {
 }
 
 void main() {
-    // locate this splat's 4 texels and unpack its record
-    float row = floor(a_index / u_per_row);
-    float col0 = (a_index - row * u_per_row) * 4.0;
+    // the slot arrives already split into (column, row), so there is no
+    // per-vertex division and no index too large to hold exactly in a float
+    float row = a_slot.y;
+    float col0 = a_slot.x * 4.0;   // _TEXELS_PER_SPLAT
     vec4 t0 = fetch(col0, row);
     vec4 t1 = fetch(col0 + 1.0, row);
     vec4 t2 = fetch(col0 + 2.0, row);
@@ -186,11 +188,11 @@ class GaussianSplatVisual(Visual):
     Notes
     -----
     Per-splat records are stored once in a data texture and fetched in the
-    vertex shader by index. The splats are depth-sorted on the CPU, but only
-    the (N,) index order is re-uploaded, and only when the view *direction*
-    rotates (pan, zoom and static redraws reuse the existing order) -- so the
-    heavy per-splat data never moves after upload, which keeps interaction
-    smooth for up to a few million splats.
+    vertex shader by texture slot. The splats are depth-sorted on the CPU, but
+    only the (N, 2) draw order is re-uploaded, and only when the view
+    *direction* rotates (pan, zoom and static redraws reuse the existing
+    order) -- so the heavy per-splat data never moves after upload, which
+    keeps interaction smooth for up to a few million splats.
 
     Color is a fixed per-Gaussian RGBA value; view-dependent color is often
     included in splat data, but yet not supported here.
@@ -219,10 +221,11 @@ class GaussianSplatVisual(Visual):
         quad = np.array([[-1, -1], [1, -1], [-1, 1], [1, 1]], dtype=np.float32)
         self.shared_program["a_quad"] = gloo.VertexBuffer(quad)
 
-        # per-instance draw order (splat indices, far -> near)
-        # reuploaded on _sort
-        self._index_vbo = gloo.VertexBuffer(np.zeros(1, np.float32), divisor=1)
-        self.shared_program["a_index"] = self._index_vbo
+        # per-instance draw order, far -> near, as (column, row) texture
+        # slots; reuploaded on _sort
+        self._slot_vbo = gloo.VertexBuffer(
+            np.zeros((1, 2), np.float32), divisor=1)
+        self.shared_program["a_slot"] = self._slot_vbo
 
         # static per-splat data texture
         self._tex = gloo.Texture2D(
@@ -231,7 +234,6 @@ class GaussianSplatVisual(Visual):
             internalformat="rgba32f",
         )
         self.shared_program["u_splats"] = self._tex
-        self.shared_program["u_per_row"] = float(_SPLATS_PER_ROW)
         self.shared_program["u_tex_size"] = (float(_TEX_WIDTH), 1.0)
 
         self._draw_mode = "triangle_strip"
@@ -329,8 +331,9 @@ class GaussianSplatVisual(Visual):
             )
         if m > _MAX_SPLATS:
             raise ValueError(
-                f"GaussianSplatVisual supports at most {_MAX_SPLATS} splats, "
-                f"got {m}"
+                f"{m:,} splats exceed what this visual can address: the limit "
+                f"is {_MAX_SPLATS:,} ({_SPLATS_PER_ROW} splats per row x "
+                f"{_MAX_TEX_HEIGHT} rows of the data texture)"
             )
 
         # 16 floats (4 RGBA texels) per splat; splat i -> linear texels [i*4:].
@@ -377,9 +380,7 @@ class GaussianSplatVisual(Visual):
             # happens to hold get drawn
             if self._last_view_dir is not None:
                 return
-            self._index_vbo.set_data(
-                np.arange(len(self._splat_pos), dtype=np.float32)
-            )
+            self._upload_order(np.arange(len(self._splat_pos)))
             return
         view_dir = grad / norm
         if self._last_view_dir is not None and np.allclose(
@@ -393,12 +394,23 @@ class GaussianSplatVisual(Visual):
         if hi > lo:
             # quantize to uint16 so the stable argsort is an O(N) radix sort;
             key = ((hi - depth) * (65535.0 / (hi - lo))).astype(np.uint16)
-            order = np.argsort(key, kind="stable").astype(np.float32)
+            order = np.argsort(key, kind="stable")
         else:
             # all splats share a depth plane: any order composites the same
-            order = np.arange(len(depth), dtype=np.float32)
+            order = np.arange(len(depth))
 
-        self._index_vbo.set_data(order)
+        self._upload_order(order)
+
+    def _upload_order(self, order):
+        """Upload a draw order as (column, row) texture slots.
+
+        Both components stay small enough to be exact in float32 however many
+        splats there are, which a running index would not.
+        """
+        slots = np.empty((len(order), 2), np.float32)
+        slots[:, 0] = order % _SPLATS_PER_ROW     # column, in splats
+        slots[:, 1] = order // _SPLATS_PER_ROW    # row
+        self._slot_vbo.set_data(slots)
 
     def _check_texture_size(self, view):
         """Warn once if the data texture exceeds this context's real limit.
