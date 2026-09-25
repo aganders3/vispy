@@ -94,6 +94,7 @@ uniform sampler2D u_splats; // static per-splat data (RGBA32F)
 uniform vec2 u_tex_size;    // data texture size in texels (width, height)
 
 uniform float u_eps;        // finite-difference step (visual units)
+uniform float u_antialias;  // 1.0 to compensate opacity for the dilation
 
 const float c_cutoff = 3.0;    // quad half-extent in sigmas
 const float c_dilation = 0.3;  // low-pass dilation added to screen cov (px^2)
@@ -149,9 +150,11 @@ void main() {
     vec3 r1 = vec3(jx.y, jy.y, jz.y);
     vec3 sr0 = sigma * r0;
     vec3 sr1 = sigma * r1;
-    float ca = dot(r0, sr0) + c_dilation;   // Sigma2_00
+    float ca0 = dot(r0, sr0);               // Sigma2_00 before dilation
     float cb = dot(r0, sr1);                // Sigma2_01
-    float cc = dot(r1, sr1) + c_dilation;   // Sigma2_11
+    float cc0 = dot(r1, sr1);               // Sigma2_11 before dilation
+    float ca = ca0 + c_dilation;
+    float cc = cc0 + c_dilation;
 
     float det = ca * cc - cb * cb;
     if (det <= 0.0) {
@@ -182,6 +185,13 @@ void main() {
 
     v_offset = offset;
     v_color = a_color;
+    if (u_antialias > 0.5) {
+        // scenes trained with anti-aliasing (Mip-Splatting style) expect the
+        // dilation to conserve each splat's total weight, so scale the peak
+        // opacity by the ratio of the areas before and after dilating
+        float det0 = max(ca0 * cc0 - cb * cb, 0.0);
+        v_color.a *= sqrt(det0 / det);
+    }
 
     // offset is in true (post-divide) pixels, but framebuffer coords are
     // pre-perspective-divide, so scale by w
@@ -253,6 +263,12 @@ class GaussianSplatVisual(Visual):
         color also carries an alpha (opaque unless the color says otherwise),
         which ``opacities`` overrides. Named in the plural because the scene
         graph's ``Node.opacity`` is a separate, whole-visual alpha.
+    antialias : bool
+        Compensate opacity for the screen-space low-pass dilation, as expected
+        by scenes trained with anti-aliasing (e.g. Mip-Splatting or gsplat's
+        ``"antialiased"`` mode). Leave off (the default) for scenes trained
+        like the original 3DGS, which would otherwise render too faint. See
+        the ``antialias`` property.
 
     Notes
     -----
@@ -267,7 +283,8 @@ class GaussianSplatVisual(Visual):
     included in splat data, but yet not supported here.
     """
 
-    def __init__(self, positions, covariances, colors, opacities=None):
+    def __init__(self, positions, covariances, colors, opacities=None, *,
+                 antialias=False):
         Visual.__init__(self, VERTEX_SHADER, FRAGMENT_SHADER)
 
         self._splat_pos = None
@@ -316,6 +333,7 @@ class GaussianSplatVisual(Visual):
             blend_func=("one", "one_minus_src_alpha"),
         )
 
+        self.antialias = antialias
         self.set_data(positions, covariances, colors, opacities)
 
     @property
@@ -351,6 +369,27 @@ class GaussianSplatVisual(Visual):
         ``scene.visuals.GaussianSplat``.
         """
         return self._splat_alpha
+
+    @property
+    def antialias(self):
+        """Whether opacity is compensated for the low-pass dilation.
+
+        Every splat's screen-space covariance is dilated by a small fixed
+        amount so that sub-pixel splats don't alias. Scenes trained with
+        anti-aliasing expect that dilation to leave each splat's total weight
+        unchanged, i.e. its peak opacity scaled down by
+        ``sqrt(det(cov2d) / det(cov2d + dilation))``; scenes trained like the
+        original 3DGS expect the opacity as stored. The training mode is not
+        part of the standard ply layout, though some tools record it (Postshot
+        writes a ``postshot.anti_aliasing=1`` header comment).
+        """
+        return self._antialias
+
+    @antialias.setter
+    def antialias(self, value):
+        self._antialias = bool(value)
+        self.shared_program["u_antialias"] = float(self._antialias)
+        self.update()
 
     def set_data(self, positions=None, covariances=None, colors=None,
                  opacities=None):

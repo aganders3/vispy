@@ -206,6 +206,20 @@ def test_splat_opacities_not_shadowed_by_node():
     assert splat.opacity == 1.0
 
 
+def test_splat_antialias_property():
+    positions, covariances, colors = _make_splats()
+    v = visuals.GaussianSplatVisual(positions, covariances, colors)
+    assert v.antialias is False
+    assert v.shared_program["u_antialias"] == 0.0
+
+    v = visuals.GaussianSplatVisual(positions, covariances, colors,
+                                    antialias=True)
+    assert v.antialias is True
+    assert v.shared_program["u_antialias"] == 1.0
+    v.antialias = False
+    assert v.shared_program["u_antialias"] == 0.0
+
+
 @requires_pyopengl()
 @requires_application()
 def test_splat_draw():
@@ -223,6 +237,27 @@ def test_splat_draw():
         render = c.render()
         # something was drawn on the (otherwise black) canvas
         assert render[..., :3].sum() > 0
+
+
+@requires_pyopengl()
+@requires_application()
+def test_splat_draw_antialias_dims_small_splats():
+    """Compensating for the dilation lowers the opacity of a small splat."""
+    positions = np.array([[0, 0, 0]], dtype=np.float32)
+    # about a pixel across, so the dilation roughly doubles its area
+    covariances = (np.eye(3, dtype=np.float32) * 1e-5)[np.newaxis]
+    colors = np.array([[1, 1, 1, 1]], dtype=np.float32)
+    with TestingCanvas(size=(100, 100), bgcolor='black') as c:
+        use(gl='gl+')
+        view = c.central_widget.add_view()
+        view.camera = scene.cameras.TurntableCamera(fov=0, distance=3.0)
+        splat = scene.visuals.GaussianSplat(positions, covariances, colors,
+                                            parent=view.scene)
+        plain = c.render()[..., :3].astype(float).sum()
+        splat.antialias = True
+        compensated = c.render()[..., :3].astype(float).sum()
+    assert plain > 0
+    assert 0 < compensated < plain
 
 
 @requires_pyopengl()

@@ -17,6 +17,12 @@ Splatting for Real-Time Radiance Field Rendering" code and compatible tools
 from the log-space scales and rotation quaternions, and hands the resulting
 arrays to the ``GaussianSplat`` visual.
 
+Scenes trained with anti-aliasing need their opacity compensated for the
+visual's screen-space dilation. The ply layout has no standard field for this,
+so it is read from the ``postshot.anti_aliasing`` header comment that Postshot
+writes (the sample scene has it); use ``--antialias``/``--no-antialias`` to
+override, or press ``a`` to toggle it while the scene is up.
+
 With no ply file provided this script fetches a sample file of a clusterfly
 from the vispy demo-data repository. This file was orignally created by Dany
 Bittel and retrieved from https://superspl.at/scene/285082b2 (licensed CC-BY).
@@ -47,13 +53,20 @@ def load_splats(path):
     """Read a 3DGS ply and return per-Gaussian arrays compatible with
     the GaussianSplat visual.
 
-    Returns ``(positions, covariances, colors)`` as float32 arrays with shapes
-    (N, 3), (N, 3, 3) and (N, 4), where ``colors`` is RGBA (alpha is opacity).
+    Returns ``(positions, covariances, colors, antialias)``. The first three
+    are float32 arrays with shapes (N, 3), (N, 3, 3) and (N, 4), where
+    ``colors`` is RGBA (alpha is opacity). ``antialias`` says whether the
+    header marks the scene as trained with anti-aliasing.
     """
     from plyfile import PlyData
     from scipy.spatial.transform import Rotation
 
-    v = PlyData.read(path).elements[0].data
+    ply = PlyData.read(path)
+    v = ply.elements[0].data
+    # plyfile files a comment under the element it follows, and Postshot
+    # writes this one after the vertex element line
+    comments = ply.comments + [c for el in ply.elements for c in el.comments]
+    antialias = 'postshot.anti_aliasing=1' in comments
 
     xyz = np.stack([v['x'], v['y'], v['z']], axis=-1).astype(np.float64)
 
@@ -89,6 +102,7 @@ def load_splats(path):
         np.ascontiguousarray(xyz, f32),
         np.ascontiguousarray(sigma, f32),
         np.ascontiguousarray(rgba, f32),
+        antialias,
     )
 
 
@@ -104,6 +118,11 @@ def main():
                         help="scene up-axis. If the scene is upside down use "
                              "--up=-z; note negative axes need the '=' form. "
                              "Then try +y/-y (default +z)")
+    parser.add_argument('--antialias', default=None,
+                        action=argparse.BooleanOptionalAction,
+                        help='compensate opacity for scenes trained with '
+                             'anti-aliasing (default: read from the ply '
+                             'header)')
     args = parser.parse_args()
 
     if args.ply is not None:
@@ -113,16 +132,26 @@ def main():
         path = load_data_file(DEFAULT_PLY)
         up = "-y"
 
-    positions, covariances, colors = load_splats(path)
-    print(f'loaded {len(positions):,} gaussians')
+    positions, covariances, colors, antialias = load_splats(path)
+    if args.antialias is not None:
+        antialias = args.antialias
+    print(f'loaded {len(positions):,} gaussians '
+          f'(anti-aliasing {"on" if antialias else "off"}, press a to toggle)')
 
     canvas = scene.SceneCanvas(keys='interactive', show=True, bgcolor='black')
     view = canvas.central_widget.add_view()
     view.camera = scene.cameras.TurntableCamera(fov=45.0, up=up)
 
-    scene.visuals.GaussianSplat(positions, covariances, colors,
-                                parent=view.scene)
+    splats = scene.visuals.GaussianSplat(positions, covariances, colors,
+                                         antialias=antialias,
+                                         parent=view.scene)
     view.camera.set_range()
+
+    @canvas.events.key_press.connect
+    def on_key_press(event):
+        if event.text == 'a':
+            splats.antialias = not splats.antialias
+            print(f'anti-aliasing {"on" if splats.antialias else "off"}')
 
     canvas.show()
     if sys.flags.interactive != 1:
