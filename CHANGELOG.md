@@ -1,5 +1,56 @@
 # Release Notes
 
+## [v0.17.0](https://github.com/vispy/vispy/tree/v0.17.0) (2026-09-08)
+
+**Enhancements:**
+
+- Use alpha in rgb volume calculations [\#2786](https://github.com/vispy/vispy/pull/2786) ([brisvag](https://github.com/brisvag))
+- Implement \_compute\_bounds for InstancedMeshVisual [\#2759](https://github.com/vispy/vispy/pull/2759) ([kephale](https://github.com/kephale))
+- Add RGB volume rendering support [\#2758](https://github.com/vispy/vispy/pull/2758) ([kephale](https://github.com/kephale))
+
+**Fixed bugs:**
+
+- Fix clipping for direct children of ViewBox [\#2781](https://github.com/vispy/vispy/pull/2781) ([brisvag](https://github.com/brisvag))
+- Fix perspective for text [\#2774](https://github.com/vispy/vispy/pull/2774) ([brisvag](https://github.com/brisvag))
+- Fix instanced markers perspective [\#2773](https://github.com/vispy/vispy/pull/2773) ([brisvag](https://github.com/brisvag))
+- Fix KeyError when releasing extra mouse buttons on Qt backend [\#2765](https://github.com/vispy/vispy/pull/2765) ([Phoenix0531-sudo](https://github.com/Phoenix0531-sudo))
+
+**Merged pull requests:**
+
+- Bump pypa/cibuildwheel from 4.1.0 to 4.2.0 [\#2770](https://github.com/vispy/vispy/pull/2770) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Bump actions/setup-python from 6 to 7 [\#2762](https://github.com/vispy/vispy/pull/2762) ([dependabot[bot]](https://github.com/apps/dependabot))
+- docs: introduce VisPy ecosystem landing page [\#2760](https://github.com/vispy/vispy/pull/2760) ([rossant](https://github.com/rossant))
+- Use np.reshape instead of setting shape attr [\#2757](https://github.com/vispy/vispy/pull/2757) ([gselzer](https://github.com/gselzer))
+- Bump actions/cache from 5 to 6 [\#2756](https://github.com/vispy/vispy/pull/2756) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Bump pypa/cibuildwheel from 4.0.0 to 4.1.0 [\#2754](https://github.com/vispy/vispy/pull/2754) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Bump pypa/cibuildwheel from 3.4.0 to 4.0.0 [\#2752](https://github.com/vispy/vispy/pull/2752) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Bump conda-incubator/setup-miniconda from 3 to 4 [\#2750](https://github.com/vispy/vispy/pull/2750) ([dependabot[bot]](https://github.com/apps/dependabot))
+
+## [v0.16.2](https://github.com/vispy/vispy/tree/v0.16.2) (2026-05-20)
+
+**Enhancements:**
+
+- \[maint\] Defer importing scipy.sparse [\#2744](https://github.com/vispy/vispy/pull/2744) ([psobolewskiPhD](https://github.com/psobolewskiPhD))
+- Update for new jupyter\_rfb and add experimental Marimo support [\#2738](https://github.com/vispy/vispy/pull/2738) ([almarklein](https://github.com/almarklein))
+- Expose line caps on AGG lines [\#2734](https://github.com/vispy/vispy/pull/2734) ([brisvag](https://github.com/brisvag))
+- Delay importing networkx to NetworkxCoordinates.\_\_init\_\_ [\#2726](https://github.com/vispy/vispy/pull/2726) ([psobolewskiPhD](https://github.com/psobolewskiPhD))
+
+**Fixed bugs:**
+
+- Set depth buffer for gridlines [\#2748](https://github.com/vispy/vispy/pull/2748) ([brisvag](https://github.com/brisvag))
+- Fix issues with context creation on Jupyter notebooks [\#2742](https://github.com/vispy/vispy/pull/2742) ([almarklein](https://github.com/almarklein))
+- Fix: Account for newline when positioning first text character [\#2728](https://github.com/vispy/vispy/pull/2728) ([TimMonko](https://github.com/TimMonko))
+
+**Merged pull requests:**
+
+- Bump mamba-org/setup-micromamba from 2 to 3 [\#2741](https://github.com/vispy/vispy/pull/2741) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Change `logger.warn` to `logger.warning` to silence deprecation warning [\#2735](https://github.com/vispy/vispy/pull/2735) ([Czaki](https://github.com/Czaki))
+- Bump docker/setup-qemu-action from 3 to 4 [\#2732](https://github.com/vispy/vispy/pull/2732) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Bump pypa/cibuildwheel from 3.3.1 to 3.4.0 [\#2731](https://github.com/vispy/vispy/pull/2731) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Bump actions/download-artifact from 7 to 8 [\#2730](https://github.com/vispy/vispy/pull/2730) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Bump actions/upload-artifact from 6 to 7 [\#2729](https://github.com/vispy/vispy/pull/2729) ([dependabot[bot]](https://github.com/apps/dependabot))
+- Bump pypa/cibuildwheel from 3.3.0 to 3.3.1 [\#2722](https://github.com/vispy/vispy/pull/2722) ([dependabot[bot]](https://github.com/apps/dependabot))
+
 ## [v0.16.1](https://github.com/vispy/vispy/tree/v0.16.1) (2026-01-07)
 
 **Enhancements:**
