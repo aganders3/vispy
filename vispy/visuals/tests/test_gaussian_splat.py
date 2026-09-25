@@ -8,16 +8,20 @@ import numpy as np
 import pytest
 
 from vispy import scene, use, visuals
-from vispy.testing import (TestingCanvas, requires_application,
+from vispy.testing import (TestingCanvas, has_pyopengl, requires_application,
                            requires_pyopengl, run_tests_if_main)
 
 
+# the data-only tests don't need gl+, so only switch when PyOpenGL is around;
+# the drawing tests are marked requires_pyopengl
 def setup_module(module):
-    use(gl='gl+')
+    if has_pyopengl():
+        use(gl='gl+')
 
 
 def teardown_module(module):
-    use(gl='gl2')
+    if has_pyopengl():
+        use(gl='gl2')
 
 
 def _make_splats(n=50, seed=0):
