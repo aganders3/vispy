@@ -46,6 +46,12 @@ def _parse_covariances(covariances):
     )
 
 
+def _check_unit_range(arr, name):
+    """Raise unless every value is in [0, 1], as ColorArray requires."""
+    if arr.size and (arr.min() < 0 or arr.max() > 1):
+        raise ValueError(f"{name} values must be between 0 and 1")
+
+
 def _parse_colors(colors, count):
     """Validate `colors` and return (RGB, alpha or None).
 
@@ -56,6 +62,7 @@ def _parse_colors(colors, count):
         colors = np.broadcast_to(ColorArray(colors).rgba, (count, 4))
     arr = np.asarray(colors, dtype=np.float32)
     if arr.ndim == 2 and arr.shape[1] in (3, 4):
+        _check_unit_range(arr, "colors")
         rgb = np.ascontiguousarray(arr[:, :3])
         alpha = np.ascontiguousarray(arr[:, 3]) if arr.shape[1] == 4 else None
         return rgb, alpha
@@ -73,6 +80,7 @@ def _parse_opacities(opacities, count):
         raise ValueError(
             f"opacities must be a scalar or have shape (N,), got {arr.shape}"
         )
+    _check_unit_range(arr, "opacities")
     return np.ascontiguousarray(arr)
 
 

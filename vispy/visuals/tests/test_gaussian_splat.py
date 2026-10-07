@@ -141,6 +141,21 @@ def test_splat_bad_shapes():
                                     opacities=1.0)
 
 
+def test_splat_values_out_of_range():
+    positions, covariances, colors = _make_splats()
+    bad = colors.copy()
+    bad[0, 0] = 1.5
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        visuals.GaussianSplatVisual(positions, covariances, bad)
+    bad = colors[:, :3].copy()
+    bad[0, 0] = -0.1
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        visuals.GaussianSplatVisual(positions, covariances, bad, opacities=1.0)
+    with pytest.raises(ValueError, match="between 0 and 1"):
+        visuals.GaussianSplatVisual(positions, covariances, colors[:, :3],
+                                    opacities=2.0)
+
+
 def test_splat_mismatched_lengths():
     positions, covariances, colors = _make_splats(10)
     with pytest.raises(ValueError, match="length"):
